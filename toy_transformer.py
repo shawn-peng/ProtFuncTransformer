@@ -13,11 +13,12 @@ import matplotlib.pyplot as plt
 warnings.simplefilter("ignore")
 print(torch.__version__)
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = torch.device('cpu')
 
 
-# DEBUGGING = True
 DEBUGGING = False
+# DEBUGGING = True
 if DEBUGGING:
     dbg_figs = ['encoder-decoder attention']
     figs = {k: plt.figure() for k in dbg_figs}
@@ -308,7 +309,7 @@ class TransformerDecoder(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                DecoderBlock(embed_dim, expansion_factor=4, n_heads=8)
+                DecoderBlock(embed_dim, expansion_factor=expansion_factor, n_heads=n_heads)
                 for _ in range(num_layers)
             ]
 
@@ -338,7 +339,7 @@ class TransformerDecoder(nn.Module):
 
 class Transformer(nn.Module):
     def __init__(self, embed_dim, src_vocab_size, target_vocab_size, seq_length, num_layers=2, expansion_factor=4,
-                 n_heads=8):
+                 n_heads=8, target_mask_fn=None):
         super(Transformer, self).__init__()
 
         """  
@@ -360,6 +361,11 @@ class Transformer(nn.Module):
         self.decoder = TransformerDecoder(target_vocab_size, embed_dim, seq_length, num_layers=num_layers,
                                           expansion_factor=expansion_factor, n_heads=n_heads)
 
+        if target_mask_fn is None:
+            self.target_mask_fn = self.make_trg_mask
+        else:
+            self.target_mask_fn = target_mask_fn
+
     def encode(self, src):
         return self.encoder(src)
 
@@ -367,7 +373,8 @@ class Transformer(nn.Module):
         mask = self.make_trg_mask(trg)
         return self.decoder(trg, mem, mask)
 
-    def make_trg_mask(self, trg):
+    @staticmethod
+    def make_trg_mask(trg):
         """
         Args:
             trg: target sequence
@@ -393,7 +400,7 @@ class Transformer(nn.Module):
         out:
             out: final vector which returns probabilities of each target word
         """
-        trg_mask = self.make_trg_mask(trg)
+        trg_mask = self.target_mask_fn(trg)
         enc_out = self.encoder(src)
 
         outputs = self.decoder(trg, enc_out, trg_mask)
