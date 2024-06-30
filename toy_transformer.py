@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 warnings.simplefilter("ignore")
 print(torch.__version__)
 
-# DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-DEVICE = torch.device('cpu')
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# DEVICE = torch.device('cpu')
 
 
 DEBUGGING = False
@@ -400,7 +400,8 @@ class Transformer(nn.Module):
         out:
             out: final vector which returns probabilities of each target word
         """
-        trg_mask = self.target_mask_fn(trg)
+        batch_size, trg_len = trg.shape
+        trg_mask = self.target_mask_fn(trg).expand(1, 1, trg_len, trg_len)
         enc_out = self.encoder(src)
 
         outputs = self.decoder(trg, enc_out, trg_mask)
