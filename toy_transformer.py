@@ -164,7 +164,8 @@ class MultiHeadAttention(nn.Module):
 
         # computes attention
         # adjust key for matrix multiplication
-        k_adjusted = k.transpose(-1, -2)  # (batch_size, n_heads, single_head_dim, seq_ken)  #(32 x 8 x 64 x 10)
+        # 10 -> seq_len
+        k_adjusted = k.transpose(-1, -2)  # (batch_size, n_heads, single_head_dim, seq_len)  #(32 x 8 x 64 x 10)
         product = torch.matmul(q, k_adjusted)  # (32 x 8 x 10 x 64) x (32 x 8 x 64 x 10) = #(32x8x10x10)
 
         # fill those positions of product matrix as (-1e20) where mask positions are 0
@@ -233,7 +234,7 @@ class MultiHeadAttention(nn.Module):
 
         # computes attention
         # adjust key for matrix multiplication
-        k_adjusted = k.transpose(-1, -2)  # (batch_size, n_heads, single_head_dim, seq_ken)  #(32 x 8 x 64 x 10)
+        k_adjusted = k.transpose(-1, -2)  # (batch_size, n_heads, single_head_dim, seq_len)  #(32 x 8 x 64 x 10)
         product = torch.matmul(q, k_adjusted)  # (32 x 8 x 10 x 64) x (32 x 8 x 64 x 10) = #(32x8x10x10)
 
         # fill those positions of product matrix as (-1e20) where mask positions are 0
@@ -332,7 +333,7 @@ class TransformerBlock(nn.Module):
 
         states = {}
         extend_states(states, 'attention',
-                      self.attention(key, query, value)  # 32x10x512
+                      self.attention.hidden_states(key, query, value)  # 32x10x512
                       )
         attention_residual_out = states['attention'] + query  # 32x10x512
         states['attention_residual'] = attention_residual_out
@@ -389,7 +390,7 @@ class TransformerEncoder(nn.Module):
         out = states['positional_encoder']
         for i, layer in enumerate(self.layers):
             out = extend_states(states, f'layer.{i}',
-                                layer(out, out, out))
+                                layer.hidden_states(out, out, out))
 
         states[''] = out
         return states
@@ -446,12 +447,12 @@ class DecoderBlock(nn.Module):
         states = {}
         # we need to pass mask mask only to fst attention
         attention = extend_states(states, 'attention',
-                                  self.attention(x, x, x, mask=mask))  # 32x10x512
+                                  self.attention.hidden_states(x, x, x, mask=mask))  # 32x10x512
         norm = states['norm'] = self.norm(attention + x)
         query = states['dropout'] = self.dropout(norm)
 
         out = extend_states(states, 'transformer_block',
-                            self.transformer_block(key, query, value))
+                            self.transformer_block.hidden_states(key, query, value))
 
         states[''] = out
         return states
@@ -516,7 +517,7 @@ class TransformerDecoder(nn.Module):
         x = states['dropout'] = self.dropout(x)
 
         for i, layer in enumerate(self.layers):
-            x = extend_states(states, f'layer.{i}', layer(enc_out, x, enc_out, mask))
+            x = extend_states(states, f'layer.{i}', layer.hidden_states(enc_out, x, enc_out, mask))
 
         x = states['fc_out'] = self.fc_out(x)
         out = states['softmax'] = F.softmax(x, dim=-1)
