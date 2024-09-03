@@ -50,6 +50,16 @@ class Embedding(nn.Module):
         out = self.embed(x)
         return out
 
+    def hidden_states(self, x):
+        """
+        Args:
+            x: input vector
+        Returns:
+            out: {'': embedding vector}
+        """
+        out = self.embed(x)
+        return {'': out}
+
 
 # register buffer in Pytorch ->
 # If you have parameters in your model, which should be saved and restored in the state_dict,
@@ -88,6 +98,14 @@ class PositionalEmbedding(nn.Module):
         seq_len = x.size(1)
         x = x + torch.autograd.Variable(self.pe[:seq_len, :], requires_grad=False)
         return x
+
+    def hidden_states(self, x):
+        # make embeddings relatively larger
+        x = x * math.sqrt(self.embed_dim)
+        # add constant to embedding
+        seq_len = x.size(1)
+        x = x + torch.autograd.Variable(self.pe[:seq_len, :], requires_grad=False)
+        return {'': x}
 
 
 class MultiHeadAttention(nn.Module):
@@ -178,6 +196,83 @@ class MultiHeadAttention(nn.Module):
 
         return output
 
+    def hidden_states(self, key, query, value,
+                      mask=None):  # batch_size x sequence_length x embedding_dim    # 32 x 10 x 512
+
+        """
+        Args:
+           key : key vector
+           query : query vector
+           value : value vector
+           mask: mask for decoder
+        """
+        batch_size = key.size(0)
+        seq_length = key.size(1)
+
+        # query dimension can change in decoder during inference.
+        # so we cant take general seq_length
+        seq_length_query = query.size(1)
+
+        # 32x10x512
+        key = key.view(batch_size, seq_length, self.n_heads,
+                       self.single_head_dim)  # batch_size x sequence_length x n_heads x single_head_dim = (32x10x8x64)
+        query = query.view(batch_size, seq_length_query, self.n_heads, self.single_head_dim)  # (32x10x8x64)
+        value = value.view(batch_size, seq_length, self.n_heads, self.single_head_dim)  # (32x10x8x64)
+
+        k = self.key_matrix(key)  # (32x10x8x64)
+        q = self.query_matrix(query)
+        v = self.value_matrix(value)
+
+        states = {'key': key, 'query': query, 'value': value,
+                  'k':   k, 'q': q, 'v': v}
+
+        q = q.transpose(1, 2)  # (batch_size, n_heads, seq_len, single_head_dim)    # (32 x 8 x 10 x 64)
+        k = k.transpose(1, 2)  # (batch_size, n_heads, seq_len, single_head_dim)
+        v = v.transpose(1, 2)  # (batch_size, n_heads, seq_len, single_head_dim)
+
+        # computes attention
+        # adjust key for matrix multiplication
+        k_adjusted = k.transpose(-1, -2)  # (batch_size, n_heads, single_head_dim, seq_ken)  #(32 x 8 x 64 x 10)
+        product = torch.matmul(q, k_adjusted)  # (32 x 8 x 10 x 64) x (32 x 8 x 64 x 10) = #(32x8x10x10)
+
+        # fill those positions of product matrix as (-1e20) where mask positions are 0
+        if mask is not None:
+            product = product.masked_fill(mask == 0, float("-1e20"))
+
+        # divising by square root of key dimension
+        product = product / math.sqrt(self.single_head_dim)  # / sqrt(64)
+
+        states['attention'] = product
+
+        # applying softmax
+        scores = F.softmax(product, dim=-1)
+        if DEBUGGING:
+            if scores.shape[-1] != scores.shape[-2]:
+                fig = figs['encoder-decoder attention']
+                if not fig.axes:
+                    fig.subplots(1, 1)
+                ax = fig.axes[0]
+                ax.imshow(scores[0, 0].detach())
+                plt.pause(0.001)
+                plt.ion()
+
+        states['attention_softmax'] = scores
+
+        # mutiply with value matrix
+        scores = torch.matmul(scores, v)  ##(32x8x 10x 10) x (32 x 8 x 10 x 64) = (32 x 8 x 10 x 64)
+
+        states['v_extracted'] = scores
+
+        # concatenated output
+        concat = scores.transpose(1, 2).contiguous().view(batch_size, seq_length_query,
+                                                          self.single_head_dim * self.n_heads)  # (32x8x10x64) -> (32x10x8x64)  -> (32,10,512)
+
+        output = self.out(concat)  # (32,10,512) -> (32,10,512)
+        states['out'] = output
+
+        states[''] = output
+        return states
+
 
 class TransformerBlock(nn.Module):
     def __init__(self, embed_dim, expansion_factor=4, n_heads=8):
@@ -224,6 +319,33 @@ class TransformerBlock(nn.Module):
 
         return norm2_out
 
+    def hidden_states(self, key, query, value):
+        """
+        Args:
+           key: key vector
+           query: query vector
+           value: value vector
+           norm2_out: output of transformer block
+
+        """
+
+        states = {}
+        extend_states(states, 'attention',
+                      self.attention(key, query, value)  # 32x10x512
+                      )
+        attention_residual_out = states['attention'] + query  # 32x10x512
+        states['attention_residual'] = attention_residual_out
+        states['norm1'] = self.norm1(attention_residual_out)  # 32x10x512
+        states['dropout1'] = self.dropout1(states['norm1'])
+
+        states['feed_fwd'] = self.feed_forward(states['dropout1'])  # 32x10x512 -> #32x10x2048 -> 32x10x512
+        states['feed_fwd_residual'] = states['feed_fwd'] + states['norm1']  # 32x10x512
+        states['norm2'] = self.norm2(states['feed_fwd_residual'])
+        states['dropout2'] = self.dropout2(states['norm2'])
+
+        states[''] = states['dropout2']
+        return states
+
 
 class TransformerEncoder(nn.Module):
     """
@@ -256,14 +378,19 @@ class TransformerEncoder(nn.Module):
         return out  # 32x10x512
 
     def hidden_states(self, x):
-        states = []
-        embed_out = self.embedding_layer(x)
-        out = self.positional_encoder(embed_out)
-        states.append(out)
-        for layer in self.layers:
-            out = layer(out, out, out)
-            states.append(out)
+        states = {}
+        extend_states(states, 'embedding_layer',
+                      self.embedding_layer.hidden_states(x)
+                      )
+        extend_states(states, 'positional_encoder',
+                      self.positional_encoder.hidden_states(states['embedding_layer'])
+                      )
+        out = states['positional_encoder']
+        for i, layer in enumerate(self.layers):
+            out = extend_states(states, f'layer.{i}',
+                                layer(out, out, out))
 
+        states[''] = out
         return states
 
 
@@ -302,6 +429,31 @@ class DecoderBlock(nn.Module):
         out = self.transformer_block(key, query, value)
 
         return out
+
+    def hidden_states(self, key, x, value, mask):
+        """
+        Args:
+           key: key vector
+           query: query vector
+           value: value vector
+           mask: mask to be given for multi head attention
+        Returns:
+           out: output of transformer block
+
+        """
+
+        states = {}
+        # we need to pass mask mask only to fst attention
+        attention = extend_states(states, 'attention',
+                                  self.attention(x, x, x, mask=mask))  # 32x10x512
+        norm = states['norm'] = self.norm(attention + x)
+        query = states['dropout'] = self.dropout(norm)
+
+        out = extend_states(states, 'transformer_block',
+                            self.transformer_block(key, query, value))
+
+        states[''] = out
+        return states
 
 
 class TransformerDecoder(nn.Module):
@@ -354,20 +506,21 @@ class TransformerDecoder(nn.Module):
         return out
 
     def hidden_states(self, x, enc_out, mask):
-        states = []
-        x = self.embedding_layer(x)  # 32x10x512
+        states = {}
+        x = extend_states(states, 'embedding_layer',
+                          self.embedding_layer.hidden_states(x))  # 32x10x512
+
         # x = self.word_embedding(x)  # 32x10x512
-        x = self.position_embedding(x)  # 32x10x512
-        x = self.dropout(x)
-        states.append(x)
+        x = states['position_embedding'] = self.position_embedding(x)  # 32x10x512
+        x = states['dropout'] = self.dropout(x)
 
-        for layer in self.layers:
-            x = layer(enc_out, x, enc_out, mask)
-            states.append(x)
+        for i, layer in enumerate(self.layers):
+            x = extend_states(states, f'layer.{i}', layer(enc_out, x, enc_out, mask))
 
-        out = F.softmax(self.fc_out(x), dim=-1)
-        states.append(out)
+        x = states['fc_out'] = self.fc_out(x)
+        out = states['softmax'] = F.softmax(x, dim=-1)
 
+        states[''] = out
         return states
 
 
@@ -446,8 +599,20 @@ class Transformer(nn.Module):
     def hidden_states(self, src, trg):
         batch_size, trg_len = trg.shape
         trg_mask = self.target_mask_fn(trg).expand(1, 1, trg_len, trg_len)
-        states = []
-        states += self.encoder.hidden_states(src)
+        states = {}
+        extend_states(states, 'encoder', self.encoder.hidden_states(src))
 
-        states += self.decoder.hidden_states(trg, states[-1], trg_mask)
+        extend_states(states, 'decoder',
+                      self.decoder.hidden_states(trg, states['encoder'], trg_mask))
+        states[''] = states['decoder']
         return states
+
+
+def extend_states(states, mod_name, mod_states):
+    for k, state in mod_states.items():
+        if k:
+            states[f'{mod_name}.{k}'] = state
+        else:
+            states[f'{mod_name}'] = state
+    return mod_states['']
+
