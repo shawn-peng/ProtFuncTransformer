@@ -7,7 +7,6 @@ import warnings
 import pandas as pd
 import numpy as np
 import seaborn as sns
-import torchtext
 import matplotlib.pyplot as plt
 
 warnings.simplefilter("ignore")
@@ -15,7 +14,6 @@ print(torch.__version__)
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # DEVICE = torch.device('cpu')
-
 
 DEBUGGING = False
 # DEBUGGING = True
@@ -25,18 +23,22 @@ if DEBUGGING:
     plt.ion()
     plt.show()
 
-
 dropout_rate = 0.1
 
+
 class Embedding(nn.Module):
-    def __init__(self, vocab_size, embed_dim):
+    def __init__(self, vocab_size, embed_dim, embedding=None):
         """
         Args:
             vocab_size: size of vocabulary
             embed_dim: dimension of embeddings
         """
         super(Embedding, self).__init__()
-        self.embed = nn.Embedding(vocab_size, embed_dim)
+        if embedding:
+            self.embed = nn.Embedding.from_pretrained(embedding)
+            assert True
+        else:
+            self.embed = nn.Embedding(vocab_size, embed_dim)
 
     def forward(self, x):
         """
@@ -236,10 +238,11 @@ class TransformerEncoder(nn.Module):
         out: output of the encoder
     """
 
-    def __init__(self, seq_len, vocab_size, embed_dim, num_layers=2, expansion_factor=4, n_heads=8):
+    def __init__(self, seq_len, vocab_size, embed_dim, num_layers=2, expansion_factor=4, n_heads=8,
+                 word_embedding=None):
         super(TransformerEncoder, self).__init__()
 
-        self.embedding_layer = Embedding(vocab_size, embed_dim)
+        self.embedding_layer = Embedding(vocab_size, embed_dim, word_embedding)
         self.positional_encoder = PositionalEmbedding(seq_len, embed_dim)
 
         self.layers = nn.ModuleList([TransformerBlock(embed_dim, expansion_factor, n_heads) for i in range(num_layers)])
@@ -251,6 +254,17 @@ class TransformerEncoder(nn.Module):
             out = layer(out, out, out)
 
         return out  # 32x10x512
+
+    def hidden_states(self, x):
+        states = []
+        embed_out = self.embedding_layer(x)
+        out = self.positional_encoder(embed_out)
+        states.append(out)
+        for layer in self.layers:
+            out = layer(out, out, out)
+            states.append(out)
+
+        return states
 
 
 class DecoderBlock(nn.Module):
@@ -291,7 +305,8 @@ class DecoderBlock(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8):
+    def __init__(self, vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8,
+                 word_embedding=None):
         super(TransformerDecoder, self).__init__()
         """  
         Args:
@@ -303,7 +318,8 @@ class TransformerDecoder(nn.Module):
            n_heads: number of heads in multihead attention
 
         """
-        self.word_embedding = nn.Embedding(target_vocab_size, embed_dim)
+        self.embedding_layer = Embedding(vocab_size, embed_dim, word_embedding)
+        # self.word_embedding = nn.Embedding(vocab_size, embed_dim)
         self.position_embedding = PositionalEmbedding(seq_len, embed_dim)
         self.dropout = nn.Dropout(dropout_rate)
 
@@ -314,7 +330,7 @@ class TransformerDecoder(nn.Module):
             ]
 
         )
-        self.fc_out = nn.Linear(embed_dim, target_vocab_size)
+        self.fc_out = nn.Linear(embed_dim, vocab_size)
 
     def forward(self, x, enc_out, mask):
         """
@@ -325,7 +341,8 @@ class TransformerDecoder(nn.Module):
         Returns:
             out: output vector
         """
-        x = self.word_embedding(x)  # 32x10x512
+        x = self.embedding_layer(x)  # 32x10x512
+        # x = self.word_embedding(x)  # 32x10x512
         x = self.position_embedding(x)  # 32x10x512
         x = self.dropout(x)
 
@@ -336,10 +353,27 @@ class TransformerDecoder(nn.Module):
 
         return out
 
+    def hidden_states(self, x, enc_out, mask):
+        states = []
+        x = self.embedding_layer(x)  # 32x10x512
+        # x = self.word_embedding(x)  # 32x10x512
+        x = self.position_embedding(x)  # 32x10x512
+        x = self.dropout(x)
+        states.append(x)
+
+        for layer in self.layers:
+            x = layer(enc_out, x, enc_out, mask)
+            states.append(x)
+
+        out = F.softmax(self.fc_out(x), dim=-1)
+        states.append(out)
+
+        return states
+
 
 class Transformer(nn.Module):
     def __init__(self, embed_dim, src_vocab_size, target_vocab_size, seq_length, num_layers=2, expansion_factor=4,
-                 n_heads=8, target_mask_fn=None):
+                 n_heads=8, target_mask_fn=None, source_embedding=None, target_embedding=None):
         super(Transformer, self).__init__()
 
         """  
@@ -357,9 +391,11 @@ class Transformer(nn.Module):
         self.target_vocab_size = target_vocab_size
 
         self.encoder = TransformerEncoder(seq_length, src_vocab_size, embed_dim, num_layers=num_layers,
-                                          expansion_factor=expansion_factor, n_heads=n_heads)
+                                          expansion_factor=expansion_factor, n_heads=n_heads,
+                                          word_embedding=source_embedding)
         self.decoder = TransformerDecoder(target_vocab_size, embed_dim, seq_length, num_layers=num_layers,
-                                          expansion_factor=expansion_factor, n_heads=n_heads)
+                                          expansion_factor=expansion_factor, n_heads=n_heads,
+                                          word_embedding=target_embedding)
 
         if target_mask_fn is None:
             self.target_mask_fn = self.make_trg_mask
@@ -406,3 +442,12 @@ class Transformer(nn.Module):
 
         outputs = self.decoder(trg, enc_out, trg_mask)
         return outputs
+
+    def hidden_states(self, src, trg):
+        batch_size, trg_len = trg.shape
+        trg_mask = self.target_mask_fn(trg).expand(1, 1, trg_len, trg_len)
+        states = []
+        states += self.encoder.hidden_states(src)
+
+        states += self.decoder.hidden_states(trg, states[-1], trg_mask)
+        return states
