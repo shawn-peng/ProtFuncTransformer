@@ -34,7 +34,8 @@ class Embedding(nn.Module):
             embed_dim: dimension of embeddings
         """
         super(Embedding, self).__init__()
-        if embedding:
+        if embedding is not None:
+            assert embedding.shape == (vocab_size, embed_dim)
             self.embed = nn.Embedding.from_pretrained(embedding)
             assert True
         else:
