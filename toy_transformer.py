@@ -397,7 +397,7 @@ class TransformerEncoder(nn.Module):
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, residue_link=False):
         super(DecoderBlock, self).__init__()
 
         """
@@ -407,6 +407,7 @@ class DecoderBlock(nn.Module):
            n_heads: number of attention heads
 
         """
+        self.residue_link = residue_link
         self.attention = MultiHeadAttention(embed_dim, n_heads=8)
         self.norm = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout_rate)
@@ -426,7 +427,9 @@ class DecoderBlock(nn.Module):
 
         # we need to pass mask mask only to fst attention
         attention = self.attention(x, x, x, mask=mask)  # 32x10x512
-        query = self.dropout(self.norm(attention + x))
+        if self.residue_link:
+            attention = attention + x
+        query = self.dropout(self.norm(attention))
 
         out = self.transformer_block(key, query, value)
 
@@ -448,7 +451,9 @@ class DecoderBlock(nn.Module):
         # we need to pass mask mask only to fst attention
         attention = extend_states(states, 'attention',
                                   self.attention.hidden_states(x, x, x, mask=mask))  # 32x10x512
-        norm = states['norm'] = self.norm(attention + x)
+        if self.residue_link:
+            attention = states['with_residue'] = attention + x
+        norm = states['norm'] = self.norm(attention)
         query = states['dropout'] = self.dropout(norm)
 
         out = extend_states(states, 'transformer_block',
@@ -460,7 +465,7 @@ class DecoderBlock(nn.Module):
 
 class TransformerDecoder(nn.Module):
     def __init__(self, vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8,
-                 word_embedding=None):
+                 word_embedding=None, residue_links=False):
         super(TransformerDecoder, self).__init__()
         """  
         Args:
@@ -479,7 +484,7 @@ class TransformerDecoder(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                DecoderBlock(embed_dim, expansion_factor=expansion_factor, n_heads=n_heads)
+                DecoderBlock(embed_dim, expansion_factor=expansion_factor, n_heads=n_heads, residue_links=residue_links)
                 for _ in range(num_layers)
             ]
 
@@ -528,7 +533,7 @@ class TransformerDecoder(nn.Module):
 
 class Transformer(nn.Module):
     def __init__(self, embed_dim, src_vocab_size, target_vocab_size, seq_length, num_layers=2, expansion_factor=4,
-                 n_heads=8, target_mask_fn=None, source_embedding=None, target_embedding=None):
+                 n_heads=8, target_mask_fn=None, source_embedding=None, target_embedding=None, decoder_residue_links=False):
         super(Transformer, self).__init__()
 
         """  
@@ -550,7 +555,7 @@ class Transformer(nn.Module):
                                           word_embedding=source_embedding)
         self.decoder = TransformerDecoder(target_vocab_size, embed_dim, seq_length, num_layers=num_layers,
                                           expansion_factor=expansion_factor, n_heads=n_heads,
-                                          word_embedding=target_embedding)
+                                          word_embedding=target_embedding, residue_links=decoder_residue_links)
 
         if target_mask_fn is None:
             self.target_mask_fn = self.make_trg_mask
