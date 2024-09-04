@@ -484,7 +484,7 @@ class TransformerDecoder(nn.Module):
 
         self.layers = nn.ModuleList(
             [
-                DecoderBlock(embed_dim, expansion_factor=expansion_factor, n_heads=n_heads, residue_links=residue_links)
+                DecoderBlock(embed_dim, expansion_factor=expansion_factor, n_heads=n_heads, residue_link=residue_links)
                 for _ in range(num_layers)
             ]
 
