@@ -295,6 +295,7 @@ class TransformerBlock(nn.Module):
         self.feed_forward = nn.Sequential(
             nn.Linear(embed_dim, expansion_factor * embed_dim),
             nn.ReLU(),
+            nn.Sigmoid(),
             nn.Linear(expansion_factor * embed_dim, embed_dim)
         )
 
