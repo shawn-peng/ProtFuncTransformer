@@ -532,8 +532,9 @@ class TransformerDecoder(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, embed_dim, src_vocab_size, target_vocab_size, seq_length, num_layers=2, expansion_factor=4,
-                 n_heads=8, target_mask_fn=None, source_embedding=None, target_embedding=None, decoder_residue_links=False):
+    def __init__(self, embed_dim, src_vocab_size, target_vocab_size, source_seq_length, target_seq_length, num_layers=2,
+                 expansion_factor=4, n_heads=8, target_mask_fn=None, source_embedding=None, target_embedding=None,
+                 decoder_residue_links=False):
         super(Transformer, self).__init__()
 
         """  
@@ -550,10 +551,10 @@ class Transformer(nn.Module):
 
         self.target_vocab_size = target_vocab_size
 
-        self.encoder = TransformerEncoder(seq_length, src_vocab_size, embed_dim, num_layers=num_layers,
+        self.encoder = TransformerEncoder(source_seq_length, src_vocab_size, embed_dim, num_layers=num_layers,
                                           expansion_factor=expansion_factor, n_heads=n_heads,
                                           word_embedding=source_embedding)
-        self.decoder = TransformerDecoder(target_vocab_size, embed_dim, seq_length, num_layers=num_layers,
+        self.decoder = TransformerDecoder(target_vocab_size, embed_dim, target_seq_length, num_layers=num_layers,
                                           expansion_factor=expansion_factor, n_heads=n_heads,
                                           word_embedding=target_embedding, residue_links=decoder_residue_links)
 
@@ -622,4 +623,3 @@ def extend_states(states, mod_name, mod_states):
         else:
             states[f'{mod_name}'] = state
     return mod_states['']
-
