@@ -23,7 +23,7 @@ if DEBUGGING:
     plt.ion()
     plt.show()
 
-dropout_rate = 0.1
+dropout_rate = 0.0
 
 
 class Embedding(nn.Module):

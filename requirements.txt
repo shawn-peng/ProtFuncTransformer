@@ -1,0 +1,4 @@
+jax==0.4.14
+jaxlib[cuda11_local]==0.4.14
+flax
+
